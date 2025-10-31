@@ -35,5 +35,4 @@ error: subprocess-exited-with-error
 × Getting requirements to build wheel did not run successfully.
 │ exit code: 1
 ╰─> See above for output.
-
 note: This error originates from a subprocess, and is likely not a problem with pip.
