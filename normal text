@@ -1,0 +1,39 @@
+lucky@lucky:~/Waste_Classifcation_Mobile_Robot $ source env/bin/activate
+(env) lucky@lucky:~/Waste_Classifcation_Mobile_Robot $ pip install picamera2
+Collecting picamera2
+  Using cached picamera2-0.3.31-py3-none-any.whl.metadata (6.4 kB)
+Collecting PiDNG (from picamera2)
+  Using cached pidng-4.0.9.tar.gz (21 kB)
+  Installing build dependencies ... done
+  Getting requirements to build wheel ... done
+  Preparing metadata (pyproject.toml) ... done
+Collecting av (from picamera2)
+  Using cached av-16.0.1.tar.gz (3.9 MB)
+  Installing build dependencies ... done
+  Getting requirements to build wheel ... error
+  error: subprocess-exited-with-error
+  
+  × Getting requirements to build wheel did not run successfully.
+  │ exit code: 1
+  ╰─> [11 lines of output]
+      Package libavformat was not found in the pkg-config search path.
+      Perhaps you should add the directory containing `libavformat.pc'
+      to the PKG_CONFIG_PATH environment variable
+      Package 'libavformat', required by 'virtual:world', not found
+      Package 'libavcodec', required by 'virtual:world', not found
+      Package 'libavdevice', required by 'virtual:world', not found
+      Package 'libavutil', required by 'virtual:world', not found
+      Package 'libavfilter', required by 'virtual:world', not found
+      Package 'libswscale', required by 'virtual:world', not found
+      Package 'libswresample', required by 'virtual:world', not found
+      pkg-config could not find libraries ['avformat', 'avcodec', 'avdevice', 'avutil', 'avfilter', 'swscale', 'swresample']
+      [end of output]
+  
+  note: This error originates from a subprocess, and is likely not a problem with pip.
+error: subprocess-exited-with-error
+
+× Getting requirements to build wheel did not run successfully.
+│ exit code: 1
+╰─> See above for output.
+
+note: This error originates from a subprocess, and is likely not a problem with pip.
