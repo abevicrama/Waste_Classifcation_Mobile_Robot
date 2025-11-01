@@ -1,0 +1,5 @@
+colorzero==2.0
+gpiozero==2.0.1
+pigpio==1.78
+readchar==4.2.1
+setuptools==80.9.0
