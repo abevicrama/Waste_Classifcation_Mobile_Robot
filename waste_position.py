@@ -1,169 +1,149 @@
-"""Capture one frame from the camera and run a YOLO model on it.
+import cv2
+import numpy as np
+import os
+from typing import List, Dict, Any
 
-This script provides a helper `run_model_on_one_frame()` which:
-- acquires a single frame (Picamera2 on Raspberry Pi, OpenCV on other machines),
-- runs an Ultralytics YOLO model located at `models/best2.pt`,
-- prints detected bounding boxes and saves a visualization to `last_detection.jpg`.
-
-The function avoids importing hardware-specific libraries at module import time so
-the file can be imported on development machines that don't have Picamera2.
-"""
-
-from typing import List, Tuple, Dict, Any
-
-
+# --- CONFIGURATION ---
+# IMPORTANT: You must list your class names here in the order they were trained.
+# If you only have one class (waste), just leave it as is.
+CLASS_NAMES = ["waste"] 
+MODEL_PATH = "models/best2.onnx"
+INPUT_SIZE = (640, 640) # Must match the size used during export (yolo export ... imgsz=160)
+CONF_THRESHOLD = 0.25   # Minimum confidence to detect
+NMS_THRESHOLD = 0.45    # Lower value = less overlapping boxes
 
 def _capture_frame() -> Any:
-    """Return a single frame as a NumPy array (BGR for OpenCV).
-
-    Tries Picamera2 first, falls back to OpenCV's VideoCapture(0).
-    """
-    # For local webcam testing we currently disable Picamera2 and use OpenCV.
-    # If you later want to re-enable Picamera2, uncomment the block below and
-    # remove the OpenCV-only code.
-    #
-    # --- Picamera2 block (commented out) ---
+    """Return a single frame as a NumPy array."""
+    # --- Option 1: Use Camera (Uncomment when ready for robot) ---
     # try:
-    #     from picamera2 import Picamera2
-    #
-    #     picam2 = Picamera2()
-    #     preview_config = picam2.create_preview_configuration(main={"size": (640, 480)})
-    #     picam2.configure(preview_config)
-    #     picam2.start()
-    #     frame = picam2.capture_array()
-    #     picam2.stop()
-    #     try:
-    #         import cv2
-    #         frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-    #     except Exception:
-    #         pass
+    #     cap = cv2.VideoCapture(0)
+    #     if not cap.isOpened():
+    #         raise RuntimeError("Camera not found")
+    #     ret, frame = cap.read()
+    #     cap.release()
+    #     if not ret:
+    #         raise RuntimeError("Failed to read frame")
     #     return frame
-    # except Exception:
-    #     pass
-    # --- end Picamera2 block ---
+    # except Exception as e:
+    #     raise RuntimeError(f"Camera error: {e}")
 
-    # Use OpenCV webcam for testing
-    try:
-        import cv2
-
-        cap = cv2.VideoCapture(0)
-        if not cap.isOpened():
-            cap.release()
-            raise RuntimeError("OpenCV VideoCapture could not open the camera")
-        ret, frame = cap.read()
-        cap.release()
-        if not ret:
-            raise RuntimeError("OpenCV failed to read a frame from the camera")
-        return frame
-    except Exception as exc:
-        raise RuntimeError(f"Failed to capture frame with OpenCV webcam: {exc}")
-
-
-def run_model_on_one_frame(model_path: str = "models/best2.pt") -> List[Dict[str, Any]]:
-    """Load YOLO model, run inference on one captured frame, return bounding boxes.
-
-    Returns a list of detections where each detection is a dict containing
-    'xyxy' (xmin, ymin, xmax, ymax), 'conf' (confidence) and 'cls' (class id).
-    Also writes a visualization image to `last_detection.jpg` if any detections are found.
-    """
-    # Lazy import ultralytics to avoid import errors on machines without it
-    try:
-        from ultralytics import YOLO
-    except Exception as exc:
-        raise RuntimeError(f"Failed to import ultralytics YOLO: {exc}\nInstall with: pip install ultralytics")
-
-    # load model
-    model = YOLO(model_path)
-
-    # capture one frame
-    #frame = _capture_frame()
-    import cv2
-    frame = cv2.imread("testing_image/test_01.jpeg")
+    # --- Option 2: Use Test Image (Current Setup) ---
+    img_path = "testing_image/test_02.jpeg"
+    if not os.path.exists(img_path):
+        raise RuntimeError(f"Test image not found at: {img_path}")
+    
+    frame = cv2.imread(img_path)
     if frame is None:
-        raise RuntimeError("No frame captured")
+        raise RuntimeError("Failed to load test image")
+    return frame
 
-    # Image size (width, height)
+def run_model_on_one_frame(model_path: str = MODEL_PATH) -> List[Dict[str, Any]]:
+    # 1. Load Model
+    if not os.path.exists(model_path):
+        raise FileNotFoundError(f"Model not found at {model_path}")
+    
+    net = cv2.dnn.readNetFromONNX(model_path)
+
+    # 2. Get Frame
+    frame = _capture_frame()
     img_height, img_width = frame.shape[:2]
-    print(f"Image size (width x height): {img_width} x {img_height}")
-    image_size = (img_width, img_height)
+    print(f"Image size: {img_width} x {img_height}")
 
-    # Run inference. Ultralytics accepts NumPy arrays directly.
-    results = model(frame)
-    for res in results:
-        res.show()
-    detections: List[Dict[str, Any]] = []
+    # 3. Preprocess (Scale image to 160x160 for the model)
+    # YOLOv8 expects pixel values 0-1, so we multiply by 1/255.0
+    blob = cv2.dnn.blobFromImage(frame, 1/255.0, INPUT_SIZE, swapRB=True, crop=False)
+    net.setInput(blob)
+
+    # 4. Inference (The Magic Step)
+    # Returns a raw matrix of shape (1, 5, 2100) or similar
+    outputs = net.forward()
+    print(f"Raw Output Shape: {outputs.shape}")
+    max_conf = np.max(outputs[:, 4:, :]) 
+    print(f"Highest confidence found in image: {max_conf:.4f}")
+    # 5. Post-Processing (Decoding the Raw Matrix)
+    # Transpose to shape (Rows, Cols) -> e.g., (2100, 5)
+    outputs = np.transpose(np.squeeze(outputs))
+
+    boxes = []
+    confidences = []
+    class_ids = []
+
+    # Calculate scaling factors to map 160x160 detections back to 1280x720
+    x_factor = img_width / INPUT_SIZE[0]
+    y_factor = img_height / INPUT_SIZE[1]
+
+    rows = outputs.shape[0]
+
+    for i in range(rows):
+        # The first 4 values are box coordinates. The rest are class probabilities.
+        classes_scores = outputs[i][4:] 
+        max_score = np.amax(classes_scores)
+
+        if max_score >= CONF_THRESHOLD:
+            class_id = np.argmax(classes_scores)
+            
+            # Extract box (Center_x, Center_y, Width, Height)
+            x, y, w, h = outputs[i][0], outputs[i][1], outputs[i][2], outputs[i][3]
+
+            # Convert to Top-Left Coordinate and Scale up
+            left = int((x - w / 2) * x_factor)
+            top = int((y - h / 2) * y_factor)
+            width = int(w * x_factor)
+            height = int(h * y_factor)
+
+            boxes.append([left, top, width, height])
+            confidences.append(float(max_score))
+            class_ids.append(class_id)
+
+    # 6. Non-Maximum Suppression (Remove duplicate boxes for the same object)
+    indices = cv2.dnn.NMSBoxes(boxes, confidences, CONF_THRESHOLD, NMS_THRESHOLD)
+
+    final_detections = []
     
-    
+    # Check if we have any detections
+    if len(indices) > 0:
+        for i in indices.flatten():
+            box = boxes[i]
+            (left, top, width, height) = box
+            
+            # Calculate x_max and y_max
+            x_min, y_min = left, top
+            x_max, y_max = left + width, top + height
 
-    # `results` can be an object or a list depending on ultralytics version/interface
-    iterable = results if isinstance(results, (list, tuple)) else [results]
-
-    for res in iterable:
-        # Each res should have `.boxes` with `.xyxy`, `.conf`, `.cls`
-        boxes = getattr(res, "boxes", None)
-        if boxes is None:
-            continue
-
-        # Attempt to get numpy arrays from the ultralytics boxes
-        try:
-            xyxy = boxes.xyxy.cpu().numpy()
-            confs = boxes.conf.cpu().numpy()
-            classes = boxes.cls.cpu().numpy()
-        except Exception:
-            # Fallback if cpu()/numpy() not available
-            try:
-                xyxy = boxes.xyxy.numpy()
-                confs = boxes.conf.numpy()
-                classes = boxes.cls.numpy()
-            except Exception:
-                # As a last resort, try to read attributes directly
-                xyxy = getattr(boxes, "xyxy", None)
-                confs = getattr(boxes, "conf", None)
-                classes = getattr(boxes, "cls", None)
-
-        if xyxy is None:
-            continue
-
-        for i, box in enumerate(xyxy):
+            # Format for your main.py
             det = {
-                "xyxy": [float(x) for x in box],
-                "conf": float(confs[i]) if confs is not None else None,
-                "cls": int(classes[i]) if classes is not None else None,
+                "xyxy": [float(x_min), float(y_min), float(x_max), float(y_max)],
+                "conf": confidences[i],
+                "cls": int(class_ids[i]),
+                "img_width": img_width,
+                "img_height": img_height
             }
-            detections.append(det)
+            final_detections.append(det)
 
-        # Save a visualized image if possible
-        try:
-            vis = res.plot()
-            import cv2
+            # Draw on image (Visualization)
+            color = (0, 255, 0) # Green
+            cv2.rectangle(frame, (left, top), (left + width, top + height), color, 2)
+            
+            label_name = CLASS_NAMES[class_ids[i]] if class_ids[i] < len(CLASS_NAMES) else str(class_ids[i])
+            label = f"{label_name}: {confidences[i]:.2f}"
+            cv2.putText(frame, label, (left, top - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
 
-            cv2.imwrite("last_detection.jpg", vis)
-        except Exception:
-            # ignore visualization errors
-            pass
-    
-    # Build a list of detected class names (uses the model's names mapping).
+    # 7. Save Result
+    cv2.imwrite("last_detection.jpg", frame)
+    print(f"Saved visualization to last_detection.jpg. Detected: {len(final_detections)} objects.")
+
+    # 8. Show Result Window (Optional - works on Desktop, might fail on Headless Pi)
     try:
-        class_names = [model.names[int(d["cls"]) ] if d.get("cls") is not None else None for d in detections]
+        cv2.imshow("YOLO Detection", frame)
+        cv2.waitKey(1) # Important!
     except Exception:
-        # If mapping fails for any reason, fall back to an empty list.
-        class_names = []
+        pass # Ignore if no GUI available
 
-    # Print the detected class names as requested.
-    print("Detected class names:", class_names)
-
-    return detections
-
+    return final_detections
 
 if __name__ == "__main__":
-    # quick smoke test when run directly
     try:
         dets = run_model_on_one_frame()
-        if not dets:
-            print("No detections")
-        else:
-            print("Detections:")
-            for d in dets:
-                print(d)
+        print("Detections returned:", dets)
     except Exception as e:
         print(f"Error: {e}")

@@ -1,174 +1,129 @@
+"""Arm controller module with a reusable API for main.py.
+
+This refactors the previous keyboard-driven script into a module exposing
+functions/classes that main.py can import and use to rotate the base
+by a percentage, move joints, and control the gripper.
+"""
+
 import time
-import readchar
-from gpiozero import Servo
-from gpiozero.pins.pigpio import PiGPIOFactory
+from typing import Optional
 
-# ====================================================================
-# 1. Configuration and Setup
-# ====================================================================
-
-# Servo motor control uses the pigpio library for high-accuracy PWM.
-# NOTE: The pigpio daemon MUST be running on your Pi (run 'sudo pigpiod')
 try:
+    from gpiozero import Servo
+    from gpiozero.pins.pigpio import PiGPIOFactory
     factory = PiGPIOFactory()
     IS_PIGPIO_READY = True
-except OSError:
-    print("\n\n#####################################################")
-    print("FATAL ERROR: Could not connect to the pigpio daemon.")
-    print("Please ensure you have run 'sudo pigpiod' in your terminal.")
-    print("#####################################################\n")
+except Exception:
     IS_PIGPIO_READY = False
-    # If the daemon isn't ready, the script will exit in the main block.
 
 
-# Define the GPIO BCM pin numbers for each of the four servos.
-PIN_STAGE_ROTATION = 5      # 1. Base/Stage Rotation (Yaw)
-PIN_ARM_FORWARD_BACK = 6    # 2. Arm Forward/Backward (Shoulder Pitch)
-PIN_ARM_UP_DOWN = 26        # 3. Arm Up/Down (Elbow Pitch)
-PIN_FINGER_GRIP = 19        # 4. Finger/Gripper (Claw)
-
-# --- Pulse Width Setup (Limited Angular Range) ---
-# We use custom pulse widths to map the limited angular range (+/- 50 deg from initial)
-# to the Servo control values of -1.0 to 1.0. 
-if IS_PIGPIO_READY:
-    # 1. Base Rotation (Initial: 30 deg. Range: ~0 deg to 80 deg)
-    base_servo = Servo(PIN_STAGE_ROTATION, pin_factory=factory, 
-                       min_pulse_width=0.50/1000, max_pulse_width=1.39/1000)
-
-    # 2 & 3. Arm Movement (Initial: 110 deg. Range: ~60 deg to 160 deg)
-    shoulder_servo = Servo(PIN_ARM_FORWARD_BACK, pin_factory=factory,
-                           min_pulse_width=1.17/1000, max_pulse_width=2.28/1000)
-
-    elbow_servo = Servo(PIN_ARM_UP_DOWN, pin_factory=factory,
-                        min_pulse_width=1.17/1000, max_pulse_width=2.28/1000)
-
-    # 4. Gripper/Finger (Initial: 50 deg. Full range for catch/release)
-    gripper_servo = Servo(PIN_FINGER_GRIP, pin_factory=factory,
-                          min_pulse_width=0.5/1000, max_pulse_width=2.5/1000)
+# GPIO BCM pin numbers
+PIN_STAGE_ROTATION = 5      # Base/Stage Rotation (Yaw)
+PIN_ARM_FORWARD_BACK = 6    # Shoulder Pitch
+PIN_ARM_UP_DOWN = 26        # Elbow Pitch
+PIN_FINGER_GRIP = 19        # Gripper/Claw
 
 
-# ====================================================================
-# 2. Control Functions (Mapped to servo angle values: -1.0 to 1.0)
-# ====================================================================
+class ArmController:
+    """High-level arm controller suitable for programmatic control."""
 
-# Global step size for continuous movement
-STEP_SIZE = 0.05 
+    def __init__(self) -> None:
+        if not IS_PIGPIO_READY:
+            raise RuntimeError("pigpio not ready. Ensure 'sudo pigpiod' is running on the Pi.")
 
-# Helper function for setting servo value safely
-def set_servo_value(servo, value, name):
-    """Sets the servo value and clamps it between -1.0 and 1.0."""
-    value = max(-1.0, min(1.0, value))
-    servo.value = value
-    # print(f"[{name:15}] Set to value: {value:.2f}") # Commented out for cleaner console during control
-    return value
+        # Servo setup with custom pulse widths (as in original script)
+        self.base_servo = Servo(PIN_STAGE_ROTATION, pin_factory=factory,
+                                min_pulse_width=0.50/1000, max_pulse_width=1.39/1000)
+        self.shoulder_servo = Servo(PIN_ARM_FORWARD_BACK, pin_factory=factory,
+                                    min_pulse_width=1.17/1000, max_pulse_width=2.28/1000)
+        self.elbow_servo = Servo(PIN_ARM_UP_DOWN, pin_factory=factory,
+                                 min_pulse_width=1.17/1000, max_pulse_width=2.28/1000)
+        self.gripper_servo = Servo(PIN_FINGER_GRIP, pin_factory=factory,
+                                   min_pulse_width=0.5/1000, max_pulse_width=2.5/1000)
 
-def initialize_arm():
-    """Moves all servos to the safe initial positions: 30, 110, 110, 50."""
-    print("\n--- Initializing Arm to Start Position (30, 110, 110, 50) ---")
-    
-    # Base/Shoulder/Elbow are set to 0.0, which is the center of their limited range (the initial angle)
-    base_value = set_servo_value(base_servo, 0.0, "Base Rotation")
-    shoulder_value = set_servo_value(shoulder_servo, 0.0, "Arm Fwd/Bwd")
-    elbow_value = set_servo_value(elbow_servo, 0.0, "Arm Up/Down")
-    
-    # Gripper needs to be set to the value corresponding to 50 deg (-0.44)
-    gripper_value = set_servo_value(gripper_servo, -0.44, "Gripper")
-    
-    time.sleep(1.0)
-    print("Initialization Complete.")
-    return base_value, shoulder_value, elbow_value, gripper_value
+    @staticmethod
+    def _clamp(val: float, lo: float = -1.0, hi: float = 1.0) -> float:
+        return max(lo, min(hi, val))
 
-def set_gripper(state):
-    """Controls the gripper discretely (catch=1.0, release=-1.0)."""
-    if state == 'catch':
-        gripper_value = set_servo_value(gripper_servo, 1.0, "Gripper")
-        print("COMMAND: Gripper CATCH")
-    elif state == 'release':
-        gripper_value = set_servo_value(gripper_servo, -1.0, "Gripper")
-        print("COMMAND: Gripper RELEASE")
-    return gripper_value
+    def initialize(self) -> None:
+        """Move servos to safe initial positions: base~30°, shoulder/elbow~110°, gripper~50°."""
+        self.base_servo.value = 0.0       # center of limited range (~30°)
+        self.shoulder_servo.value = 0.0   # ~110°
+        self.elbow_servo.value = 0.0      # ~110°
+        self.gripper_servo.value = -0.44  # ~50° (open)
+        time.sleep(0.5)
 
-# ====================================================================
-# 3. Main Keyboard Control Loop
-# ====================================================================
+    def set_gripper(self, state: str) -> None:
+        """Set gripper: 'catch' -> closed, 'release' -> open."""
+        if state == 'catch':
+            self.gripper_servo.value = 1.0
+        elif state == 'release':
+            self.gripper_servo.value = -1.0
 
+    def rotate_stage_percent(self, percent: float) -> float:
+        """Rotate base by percentage relative to the initial ~30° position.
+
+        Mapping: percent in [0,100] -> servo.value in [-1.0, 1.0]
+        - 0%   => left-most (~0°)
+        - 50%  => center (~30° baseline)
+        - 100% => right-most (~80°)
+
+        Returns the applied `servo.value` for logging.
+        """
+        p = max(0.0, min(100.0, float(percent)))
+        servo_value = (p / 50.0) - 1.0  # 0%->-1.0, 50%->0.0, 100%->1.0
+        servo_value = self._clamp(servo_value)
+        self.base_servo.value = servo_value
+        return servo_value
+
+    def cleanup(self) -> None:
+        """Detach servos to de-energize."""
+        try:
+            self.base_servo.detach()
+            self.shoulder_servo.detach()
+            self.elbow_servo.detach()
+            self.gripper_servo.detach()
+        except Exception:
+            pass
+
+
+# Convenience module-level API for simple use from main.py
+_controller: Optional[ArmController] = None
+
+def setup() -> None:
+    """Create and initialize the arm controller (idempotent)."""
+    global _controller
+    if _controller is None:
+        _controller = ArmController()
+        _controller.initialize()
+
+def rotate_stage_percent(percent: float) -> float:
+    """Rotate the base to the given percentage using the shared controller."""
+    if _controller is None:
+        setup()
+    return _controller.rotate_stage_percent(percent)
+
+def set_gripper(state: str) -> None:
+    if _controller is None:
+        setup()
+    _controller.set_gripper(state)
+
+def cleanup() -> None:
+    global _controller
+    if _controller is not None:
+        _controller.cleanup()
+        _controller = None
+
+
+# Optional: retain keyboard control when running this file directly
 if __name__ == '__main__':
     if not IS_PIGPIO_READY:
-        print("Cannot run control loop without pigpio daemon. Exiting.")
-        exit()
+        print("pigpio not ready. Run 'sudo pigpiod' and re-execute.")
+        raise SystemExit(1)
 
-    # Initialize current servo values to start position
-    b_val, s_val, e_val, g_val = initialize_arm()
-    
-    print("\n🤖 Robot Arm Keyboard Control")
-    print("-" * 35)
-    print(" W (Elbow Up)   |   Q (Shoulder FWD) ")
-    print(" S (Elbow Down) |   E (Shoulder BWD) ")
-    print(" A (Base Left)  |   D (Base Right)   ")
-    print(" Z (Release)    |   C (Catch)        ")
-    print(" R (Reset)      |   X (Quit)         ")
-    print("-" * 35)
-    
-    current_key = ''
-
-    try:
-        while current_key != 'x':
-            # Read a single key press without waiting for Enter
-            current_key = readchar.readkey().lower()
-
-            if current_key == 'w':
-                e_val += STEP_SIZE
-                e_val = set_servo_value(elbow_servo, e_val, "Arm Up/Down")
-                print(f"COMMAND: Elbow UP -> {e_val:.2f}")
-
-            elif current_key == 's':
-                e_val -= STEP_SIZE
-                e_val = set_servo_value(elbow_servo, e_val, "Arm Up/Down")
-                print(f"COMMAND: Elbow DOWN -> {e_val:.2f}")
-
-            elif current_key == 'q':
-                s_val += STEP_SIZE
-                s_val = set_servo_value(shoulder_servo, s_val, "Arm Fwd/Bwd")
-                print(f"COMMAND: Shoulder FWD -> {s_val:.2f}")
-
-            elif current_key == 'e':
-                s_val -= STEP_SIZE
-                s_val = set_servo_value(shoulder_servo, s_val, "Arm Fwd/Bwd")
-                print(f"COMMAND: Shoulder BWD -> {s_val:.2f}")
-
-            elif current_key == 'a':
-                b_val -= STEP_SIZE
-                b_val = set_servo_value(base_servo, b_val, "Base Rotation")
-                print(f"COMMAND: Base LEFT -> {b_val:.2f}")
-
-            elif current_key == 'd':
-                b_val += STEP_SIZE
-                b_val = set_servo_value(base_servo, b_val, "Base Rotation")
-                print(f"COMMAND: Base RIGHT -> {b_val:.2f}")
-
-            elif current_key == 'z':
-                g_val = set_gripper('release')
-
-            elif current_key == 'c':
-                g_val = set_gripper('catch')
-            
-            elif current_key == 'r':
-                b_val, s_val, e_val, g_val = initialize_arm()
-                print("COMMAND: RESET")
-
-            time.sleep(0.01) # Small delay for stability
-
-    except Exception as e:
-        print(f"\nAn unexpected error occurred: {e}")
-        
-    finally:
-        print("\n--- Cleanup: Stopping Servo Signals ---")
-        # De-energize the servos by setting value to None.
-        if IS_PIGPIO_READY:
-            print("Servos detached.")
-            base_servo.detach()
-            shoulder_servo.detach()
-            elbow_servo.detach()
-            gripper_servo.detach()
-        else:
-            print("Skipped servo detachment due to pigpio connection failure.")
+    setup()
+    print("Arm initialized. Rotate base to 75% as a quick demo.")
+    applied = rotate_stage_percent(75.0)
+    print(f"Applied base servo value: {applied:.2f}")
+    time.sleep(1.0)
+    cleanup()
