@@ -82,6 +82,11 @@ def run_model_on_one_frame(model_path: str = "models/best2.pt") -> List[Dict[str
     if frame is None:
         raise RuntimeError("No frame captured")
 
+    # Image size (width, height)
+    img_height, img_width = frame.shape[:2]
+    print(f"Image size (width x height): {img_width} x {img_height}")
+    image_size = (img_width, img_height)
+
     # Run inference. Ultralytics accepts NumPy arrays directly.
     results = model(frame)
     for res in results:
