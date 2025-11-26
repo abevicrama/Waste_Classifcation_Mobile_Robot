@@ -12,6 +12,7 @@ the file can be imported on development machines that don't have Picamera2.
 from typing import List, Tuple, Dict, Any
 
 
+
 def _capture_frame() -> Any:
     """Return a single frame as a NumPy array (BGR for OpenCV).
 
@@ -75,7 +76,9 @@ def run_model_on_one_frame(model_path: str = "models/best2.pt") -> List[Dict[str
     model = YOLO(model_path)
 
     # capture one frame
-    frame = _capture_frame()
+    #frame = _capture_frame()
+    import cv2
+    frame = cv2.imread("testing_image/test_01.jpeg")
     if frame is None:
         raise RuntimeError("No frame captured")
 
